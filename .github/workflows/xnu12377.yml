@@ -92,6 +92,11 @@ jobs:
           # HakiOS defines XNU_NO_TYPE_BUILTINS in its own host header (xnu_clang_compat.h: 1 without
           # __builtin_xnu_type_signature, else 0). Apple's clang has the builtins and that header is not in this
           # build, so OSData.h's static_assert sees an undeclared identifier. kalloc.h tests it with #if (0 if undefined).
+          # blacktop's build.sh compiles the kernel for the macOS platform (SDKROOT=macosx, XNU_TARGET_OS_OSX).
+          # The HakiOS configuration is an iOS one (CONFIG_JETSAM etc., xnu-build.sh uses SDKROOT=iphoneos), and the
+          # macOS platform macros then disagree with it (vm_compressor.c, vm_compressor_backing_store.c).
+          sed -i '' '/TARGET_CONFIGS=.*KERNEL_CONFIG/ s/SDKROOT=macosx/SDKROOT=iphoneos/' dxb/build.sh
+          grep -n 'SDKROOT=iphoneos' dxb/build.sh
           sed -i '' 's/XNU_NO_TYPE_BUILTINS || //' dxb/xnu/libkern/libkern/c++/OSData.h
           ! grep -n 'XNU_NO_TYPE_BUILTINS ||' dxb/xnu/libkern/libkern/c++/OSData.h
           grep -n 'KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy)' dxb/xnu/libkern/libkern/c++/OSData.h
