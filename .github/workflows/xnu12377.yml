@@ -100,6 +100,46 @@ jobs:
           sed -i '' 's/XNU_NO_TYPE_BUILTINS || //' dxb/xnu/libkern/libkern/c++/OSData.h
           ! grep -n 'XNU_NO_TYPE_BUILTINS ||' dxb/xnu/libkern/libkern/c++/OSData.h
           grep -n 'KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy)' dxb/xnu/libkern/libkern/c++/OSData.h
+          # The patch's PAC diagnostics outside HAS_STD_PAC (that macro is set only for __arm64e__) read the PAC key
+          # registers: they do not assemble for plain arm64 and would take an undefined-instruction exception on a
+          # CPU without PAC (SM8250 has none). Compile them for arm64e only.
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          def edit(path, fn):
+              p = Path('dxb/xnu') / path
+              s = p.read_text()
+              n = fn(s)
+              assert n != s, f'{path}: nothing changed'
+              p.write_text(n)
+              print('patched', path)
+
+          # osfmk/arm/arm_init.c: hk_ib_probe() and its caller hk_ib_report()
+          def arm_init(s):
+              head = 'hk_ib_probe(struct hk_ibprobe *r)\n{\n'
+              i = s.index(head) + len(head)
+              j = s.index('\n}\n', i)
+              zero = 'r->before = r->after = r->reg_before = r->reg_after = r->cpacr = r->ttbr = 0;'
+              return s[:i] + '#if defined(__arm64e__)\n' + s[i:j] + '\n#else\n\t' + zero + '\n#endif' + s[j:]
+          edit('osfmk/arm/arm_init.c', arm_init)
+
+          # osfmk/arm64/sleh.c: the first user-mode faults are logged with two key registers
+          def sleh(s):
+              a = '\t\t\t__asm__ volatile ("mrs %0, APIAKeyLo_EL1" : "=r" (ia));\n'
+              b = '\t\t\t__asm__ volatile ("mrs %0, APGAKeyLo_EL1" : "=r" (ga));\n'
+              assert s.count(a + b) == 1
+              return s.replace(a + b, '#if defined(__arm64e__)\n' + a + b + '#else\n\t\t\tia = ga = 0;\n#endif\n')
+          edit('osfmk/arm64/sleh.c', sleh)
+
+          # osfmk/arm64/start.s: checkpoint 9 diagnostic, from its comment to the local label after br x9
+          def start(s):
+              m = re.search(r'\t// hakios DIAGNOSTIC \(checkpoint 9\).*?\n1:\n', s, re.S)
+              assert m and s.count('hakios DIAGNOSTIC (checkpoint 9)') == 1
+              return s[:m.start()] + '#if defined(__arm64e__)\n' + m.group(0) + '#endif\n' + s[m.end():]
+          edit('osfmk/arm64/start.s', start)
+          PY
+          grep -n -c 'defined(__arm64e__)' dxb/xnu/osfmk/arm/arm_init.c dxb/xnu/osfmk/arm64/sleh.c dxb/xnu/osfmk/arm64/start.s
 
       - name: Select Xcode and install build dependencies
         shell: bash
