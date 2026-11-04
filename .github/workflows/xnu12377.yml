@@ -1,0 +1,132 @@
+name: Munch - XNU 12377 (iOS 26, non-PAC arm64)
+
+# The iOS 26 kernel line for munch: Apple's xnu-12377.121.6 with the HakiOS port on top,
+# built as plain arm64 for a board without pointer authentication.
+#
+# Why this and not xnu.yml: that one builds the project's own xnu-8796 series (iOS 16). iOS 26
+# ships only arm64e user space, and xnu-12377 removed the non-Apple BCM2837 board, so nothing
+# there can produce an arm64 kernel at 12377. The HakiOS patch puts the board back
+# (pexpert/pexpert/arm64/BCM2837.h, SUPPORTED_ARM64_MACHINE_CONFIGS, MACHINE_FLAGS_ARM64_BCM2837)
+# and carries its drivers; ARCH_CONFIG=ARM64 keeps the kernel on the plain arm64 ABI, which is
+# what SM8250 can execute (it has no PAC; arm64e instructions are NOPs there).
+#
+# Untested on this branch: the first run exists to find out whether the patch applies to the tag
+# and whether blacktop's build.sh accepts a tree it did not clone itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS build host (Intel avoids ARM runner capacity constraints)
+        type: choice
+        options: [macos-15-intel, macos-15, macos-14]
+        default: macos-15-intel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: munch-ios26-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DXB_REPO: https://github.com/blacktop/darwin-xnu-build
+  DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
+  HAKIOS_REPO: https://github.com/superboyyy/hakios-arm64e-dada
+  HAKIOS_SHA: f1ae906fcc43ba8f763663257724ba938fb820ab
+  XNU_TAG: xnu-12377.121.6
+  MACOS_VERSION: '13.5'
+  KERNEL_CONFIG: DEVELOPMENT
+  # the board the HakiOS patch carries: GICv3, PSCI SMP, no pointer auth
+  MACHINE_CONFIG: BCM2837
+  ARCH_CONFIG: ARM64
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the build scripts and the HakiOS kernel patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 "$DXB_REPO" "$DXB_SHA"
+          git -C dxb checkout -q FETCH_HEAD
+          test "$(git -C dxb rev-parse HEAD)" = "$DXB_SHA"
+          git init -q hakios
+          git -C hakios fetch -q --depth 1 "$HAKIOS_REPO" "$HAKIOS_SHA"
+          git -C hakios checkout -q FETCH_HEAD
+          test "$(git -C hakios rev-parse HEAD)" = "$HAKIOS_SHA"
+          wc -l hakios/kernel/xnu-12377.121.6-dada.patch
+
+      - name: Prepare the iOS 26 kernel tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          # build.sh clones xnu itself only when dxb/xnu is absent; a tree placed here is used as it is
+          git clone -q --depth 1 --branch "$XNU_TAG" https://github.com/apple-oss-distributions/xnu.git dxb/xnu
+          git -C dxb/xnu apply --whitespace=nowarn "$PWD/hakios/kernel/xnu-12377.121.6-dada.patch"
+          test -f dxb/xnu/pexpert/pexpert/arm64/BCM2837.h
+          grep -q BCM2837 dxb/xnu/makedefs/MakeInc.def
+          git -C dxb/xnu rev-parse HEAD
+
+      - name: Select Xcode and install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install jq gum bash cmake ninja
+          # the pinned build script checks for xcodes, though Xcode is preinstalled
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
+          sudo chmod +x /usr/local/bin/xcodes
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          test -n "$XC"
+          echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$XC"
+          sw_vers
+          xcodebuild -version
+
+      - name: Build the kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dxb
+          bash build.sh 2>&1 | tee ../ios26-build.log
+
+      - name: Validate and collect the kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          K=$(ls dxb/fakeroot/System/Library/Kernels/kernel.development.bcm2837 \
+                 dxb/fakeroot/System/Library/Kernels/kernel.development.* 2>/dev/null | head -1)
+          test -n "$K" || { echo "no kernel in dxb/fakeroot/System/Library/Kernels"; ls -l dxb/fakeroot/System/Library/Kernels || true; exit 1; }
+          cp "$K" out/kernel.development.munch
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p = Path('out/kernel.development.munch')
+          magic, cpu, subtype = struct.unpack_from('<III', p.read_bytes())
+          assert magic == 0xfeedfacf, hex(magic)
+          assert cpu == 0x0100000c, hex(cpu)
+          assert (subtype & 0xffffff) in (0, 1), f'expected plain arm64, got subtype {subtype:#x}'
+          print('Verified plain arm64 Mach-O:', p)
+          PY
+          shasum -a 256 out/kernel.development.munch > out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: munch-xnu-12377-arm64
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: munch-xnu-12377-log
+          path: ios26-build.log
+          if-no-files-found: warn
+          retention-days: 14
