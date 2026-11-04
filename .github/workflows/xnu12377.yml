@@ -75,6 +75,27 @@ jobs:
           grep -q BCM2837 dxb/xnu/makedefs/MakeInc.def
           git -C dxb/xnu rev-parse HEAD
 
+      - name: Fix what the HakiOS patch leaves to its own build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # redwood_goodix.c includes a FocalTech firmware blob the patch does not carry. Empty here: the
+          # driver then has nothing to download (touch is not needed to boot).
+          cat > dxb/xnu/bsd/dev/redwood_focaltech_fw.h <<'EOF'
+          #ifndef REDWOOD_FOCALTECH_FW_H
+          #define REDWOOD_FOCALTECH_FW_H
+          #include <stdint.h>
+          #define FOCALTECH_FW_LENGTH 0u
+          static const uint8_t focaltech_fw[1] = { 0 };
+          #endif
+          EOF
+          # HakiOS defines XNU_NO_TYPE_BUILTINS in its own host header (xnu_clang_compat.h: 1 without
+          # __builtin_xnu_type_signature, else 0). Apple's clang has the builtins and that header is not in this
+          # build, so OSData.h's static_assert sees an undeclared identifier. kalloc.h tests it with #if (0 if undefined).
+          sed -i '' 's/XNU_NO_TYPE_BUILTINS || //' dxb/xnu/libkern/libkern/c++/OSData.h
+          ! grep -n 'XNU_NO_TYPE_BUILTINS ||' dxb/xnu/libkern/libkern/c++/OSData.h
+          grep -n 'KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy)' dxb/xnu/libkern/libkern/c++/OSData.h
+
       - name: Select Xcode and install build dependencies
         shell: bash
         run: |
