@@ -117,6 +117,11 @@ jobs:
 
       - name: Build the kernel
         shell: bash
+        env:
+          # MakeInc.def turns arm64 into arm64e when it has no EmbeddedDeviceMap entry for the board, and
+          # honours this variable when it is set: the first runs compiled with __arm64e__ (kalloc.c
+          # static_assert on T1SZ_BOOT + 1 + VM_KERNEL_POINTER_SIGNIFICANT_BITS). HakiOS's xnu-build.sh sets it too.
+          ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG: arm64
         run: |
           set -euo pipefail
           cd dxb
