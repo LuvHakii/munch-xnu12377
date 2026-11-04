@@ -17,10 +17,10 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: macOS build host (Intel avoids ARM runner capacity constraints)
+        description: macOS build host (xnu-12377 ships with macOS 26.5; macos-26 has Xcode 26.5)
         type: choice
-        options: [macos-15-intel, macos-15, macos-14]
-        default: macos-15-intel
+        options: [macos-26, macos-15-intel]
+        default: macos-26
 
 permissions:
   contents: read
@@ -35,7 +35,9 @@ env:
   HAKIOS_REPO: https://github.com/superboyyy/hakios-arm64e-dada
   HAKIOS_SHA: f1ae906fcc43ba8f763663257724ba938fb820ab
   XNU_TAG: xnu-12377.121.6
-  MACOS_VERSION: '13.5'
+  # Apple's release map macos-265 lists xnu-12377.121.6, bootstrap_cmds-138 and dtrace-413; the build tools
+  # of macOS 13.5 (bootstrap_cmds with a mig that lacks -mach_msg2) failed the first run
+  MACOS_VERSION: '26.5'
   KERNEL_CONFIG: DEVELOPMENT
   # the board the HakiOS patch carries: GICv3, PSCI SMP, no pointer auth
   MACHINE_CONFIG: BCM2837
@@ -43,7 +45,7 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -81,8 +83,12 @@ jobs:
           # the pinned build script checks for xcodes, though Xcode is preinstalled
           printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
           sudo chmod +x /usr/local/bin/xcodes
-          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          # the Xcode of the macOS the sources are from (26.5), else the newest 26.x, else the newest
+          XC=/Applications/Xcode_26.5.app
+          [ -d "$XC" ] || XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] || XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
           test -n "$XC"
+          ls -d /Applications/Xcode_*.app
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"
           sw_vers
