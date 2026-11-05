@@ -146,6 +146,58 @@ jobs:
               assert m and s.count('hakios DIAGNOSTIC (checkpoint 9)') == 1
               return s[:m.start()] + '#if defined(__arm64e__)\n' + m.group(0) + '#endif\n' + s[m.end():]
           edit('osfmk/arm64/start.s', start)
+
+          # bsd/dev/redwood_ufs.c: ufs_write=1 accepts only a darwin at exactly these bounds. The patch has redwood's
+          # (LBA 25374720, 5242875 blocks); munch's darwin is GPT entry 36, LBA 45102848..61880063 = 16777216 blocks
+          # of 4096 (ref/munch/sda-gpt-after.bin). User decision 2026-11-05: munch's exact values, not a minimum.
+          # The write floor moves too: iOS 26's three containers (OS 2390016 + SystemOS cryptex 1284608 + AppOS
+          # cryptex 3584 blocks, nx_block_count of each decrypted image) end at block 3678208, past redwood's 2042368;
+          # 4194304 (16 GiB) is the next power of two. The loader's BLOCK_WRITE_FIRST must equal it (ufs_page check).
+          def ufs(s):
+              a = '#define UFS_DARWIN_FIRST   25374720ULL'
+              b = '#define UFS_DARWIN_BLOCKS  5242875ULL'
+              w = '#define UFS_WRITE_FIRST    2042368ULL'
+              assert s.count(a) == 1 and s.count(b) == 1 and s.count(w) == 1
+              return (s.replace(a, '#define UFS_DARWIN_FIRST   45102848ULL').replace(b, '#define UFS_DARWIN_BLOCKS  16777216ULL')
+                      .replace(w, '#define UFS_WRITE_FIRST    4194304ULL'))
+          edit('bsd/dev/redwood_ufs.c', ufs)
+
+          # osfmk/kern/exclaves.c: run 10's link stopped at _tb_transport_startup. The KDK's libTightbeam.a has only
+          # x86_64 and arm64e.kernel slices ("fat file missing arch 'arm64'"), and munch has no exclaves to talk to.
+          def exclaves(s):
+              a = '#if __has_include(<Tightbeam/tightbeam.h>)\n\n#include <Tightbeam/tightbeam.h>'
+              assert s.count(a) == 1
+              return s.replace(a, '#if __has_include(<Tightbeam/tightbeam.h>) && defined(__arm64e__)\n\n#include <Tightbeam/tightbeam.h>')
+          edit('osfmk/kern/exclaves.c', exclaves)
+
+          # bsd/conf/files: run 10's link stopped at the twelve nw_wifi_* symbols hakios_dada_wifi.c/_wlan.c declare weak.
+          # They are dada's ath12k port, an object linked in by dada's own build and not by this one; Mach-O ld does not
+          # let a weak reference stay undefined in the kernel. munch has a QCA6390, not dada's chip: stubs, whose start
+          # fails, so the driver says so and returns (hakios_dada_wifi.c wifi_thread, "the driver's start returns").
+          def files(s):
+              a = 'bsd/dev/hakios_dada_wlan.c\tstandard\n'
+              assert s.count(a) == 1
+              return s.replace(a, a + 'bsd/dev/munch_nw_stubs.c\tstandard\n')
+          edit('bsd/conf/files', files)
+          Path('dxb/xnu/bsd/dev/munch_nw_stubs.c').write_text('''\
+          /* munch: dada's Wi-Fi library is not linked (see the CI workflow); its entry points, failing. */
+          #include <stdint.h>
+          #include <stddef.h>
+          uint64_t nw_wifi_stats[512] __attribute__((aligned(16)));     /* zeroes, larger than struct nw_wifi_stats */
+          volatile uint64_t nw_wifi_where[4];
+          int nw_wifi_start(const void *p, const void *b) { (void)p; (void)b; return -19; }    /* -ENODEV */
+          int nw_wifi_step(void) { return -19; }
+          void nw_wifi_stop(void) { }
+          int nw_wifi_scan(const uint8_t *ssid, size_t len) { (void)ssid; (void)len; return -19; }
+          int nw_wifi_bss_count(void) { return 0; }
+          int nw_wifi_bss_get(unsigned i, void *out) { (void)i; (void)out; return -19; }
+          int nw_wifi_connect(const void *a, size_t b, const void *c, size_t d) { (void)a; (void)b; (void)c; (void)d; return -19; }
+          int nw_wifi_disconnect(void) { return -19; }
+          int nw_wifi_set_events(void *fn) { (void)fn; return -19; }
+          int nw_wifi_status_get(void *out) { (void)out; return -19; }
+          int nw_wifi_tx(const void *frame, size_t len) { (void)frame; (void)len; return -19; }
+          ''')
+          print('wrote bsd/dev/munch_nw_stubs.c')
           PY
           grep -n -c 'defined(__arm64e__)' dxb/xnu/osfmk/arm/arm_init.c dxb/xnu/osfmk/arm64/sleh.c dxb/xnu/osfmk/arm64/start.s
 
