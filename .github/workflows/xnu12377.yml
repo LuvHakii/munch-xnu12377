@@ -332,8 +332,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
+          # The second pass (after the pthread/firehose rebuild) links the kernel but its install target does not
+          # copy it into fakeroot (run 12: "built kernel at .../xnu.obj/DEVELOPMENT_ARM64_BCM2837//mach.development.bcm2837",
+          # nothing in Kernels/), so the build directory is looked in too.
           K=$(ls dxb/fakeroot/System/Library/Kernels/kernel.development.bcm2837 \
-                 dxb/fakeroot/System/Library/Kernels/kernel.development.* 2>/dev/null | head -1)
+                 dxb/fakeroot/System/Library/Kernels/kernel.development.* \
+                 dxb/build/xnu.obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 2>/dev/null | head -1)
           test -n "$K" || { echo "no kernel in dxb/fakeroot/System/Library/Kernels"; ls -l dxb/fakeroot/System/Library/Kernels || true; exit 1; }
           cp "$K" out/kernel.development.munch
           python3 - <<'PY'
