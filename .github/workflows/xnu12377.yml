@@ -349,19 +349,23 @@ jobs:
           # A plain arm64 header can still carry PAC code from a linked archive or a missed diagnostic. SM8250
           # (ARMv8.2) runs the hint-space forms (paciasp, autibsp, pacia1716, xpaclri) as NOPs; every other PAC
           # instruction is undefined there, so none may be in the kernel.
-          otool -tvV out/kernel.development.munch > out/kernel.dis
-          PAC='retaa|retab|eretaa|eretab|braaz?|brabz?|blraaz?|blrabz?|ldraa|ldrab|pacia|pacib|pacda|pacdb|paciza|pacizb|pacdza|pacdzb|pacga|autia|autib|autda|autdb|autiza|autizb|autdza|autdzb|xpaci|xpacd'
-          n=$(grep -c -w -E "$PAC" out/kernel.dis || true)
-          echo "non-hint PAC instructions: $n"
-          if [ "$n" -ne 0 ]; then grep -n -w -E "$PAC" out/kernel.dis | head -40; exit 1; fi
-          rm out/kernel.dis
+          # The hits go to out/pac-hits.txt with the function each is in, and the kernel is uploaded either way
+          # (the artifact step below runs always): run 11 failed here and its kernel was lost with the runner.
           shasum -a 256 out/kernel.development.munch > out/SHA256SUMS
+          otool -tvV out/kernel.development.munch > "$RUNNER_TEMP/kernel.dis"
+          PAC='retaa|retab|eretaa|eretab|braaz?|brabz?|blraaz?|blrabz?|ldraa|ldrab|pacia|pacib|pacda|pacdb|paciza|pacizb|pacdza|pacdzb|pacga|autia|autib|autda|autdb|autiza|autizb|autdza|autdzb|xpaci|xpacd'
+          awk -v re="(^|[^A-Za-z0-9_])($PAC)([^A-Za-z0-9_]|$)" '/^[^ \t].*:$/ { fn = $0; next } $0 ~ re { print fn "\t" $0 }' \
+            "$RUNNER_TEMP/kernel.dis" > out/pac-hits.txt
+          n=$(wc -l < out/pac-hits.txt | tr -d ' ')
+          echo "non-hint PAC instructions: $n, in $(cut -f1 out/pac-hits.txt | sort -u | wc -l | tr -d ' ') functions"
+          if [ "$n" -ne 0 ]; then cut -f1 out/pac-hits.txt | sort | uniq -c | sort -rn | head -60; exit 1; fi
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: munch-xnu-12377-arm64
           path: out/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - uses: actions/upload-artifact@v4
