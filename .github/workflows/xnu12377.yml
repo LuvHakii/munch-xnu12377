@@ -107,6 +107,10 @@ jobs:
           # cache the compile at all (ccache argprocessing.cpp); XNU's C, C++ and assembler rules always pass it.
           sed -i '' 's/ -MJ \$(@:o=o\.json)//' dxb/xnu/makedefs/MakeInc.rule
           ! grep -n -e '-MJ' dxb/xnu/makedefs/MakeInc.rule
+          # Without -MJ there are no .o.json files, and build_all always makes compile_commands.json from them
+          # (MakeInc.kernel:102, unconditional): run 8 failed there ("sed: ...mac_pipe.o.json: No such file").
+          sed -i '' '/^do_build_all:: do_build_compile_commands_json$/d' dxb/xnu/makedefs/MakeInc.kernel
+          ! grep -n 'do_build_all:: do_build_compile_commands_json' dxb/xnu/makedefs/MakeInc.kernel
           python3 - <<'PY'
           import re
           from pathlib import Path
@@ -229,6 +233,28 @@ jobs:
                 -o "pthread-kext/pthread_$f.o" "$P/kern/$f.c"
             done
             libtool -static -o fakeroot/usr/local/lib/kernel/libpthread_kext.a pthread-kext/pthread_*.o
+            # build.sh's build_libdispatch makes libfirehose_kernel.a with xcodebuild -sdk macosx and
+            # ARCHS="x86_64 arm64e" (run 7 log: Libtool ... normal arm64e): no plain arm64 slice, and arm64e code
+            # (retab, braa) is undefined on SM8250. Rebuilt here the way HakiOS does (xnu-deps/setup.sh stage2):
+            # iphoneos, plain arm64, against this kernel's exported headers. build_libdispatch skips when the
+            # library exists, so the second pass keeps this one.
+            mkdir -p firehose-kext
+            D=$PWD/libdispatch
+            test -f "$D/src/firehose/firehose_buffer.c"
+            xcrun -sdk iphoneos clang -arch arm64 -c -Os -mkernel -nostdinc -fno-builtin \
+              -DKERNEL=1 -DKERNEL_PRIVATE=1 -DXNU_KERNEL_PRIVATE=0 -DPRIVATE=1 -D__DARWIN_64_BIT_INO_T=1 \
+              -DDISPATCH_USE_DTRACE=0 -DOS_ATOMIC_CONFIG_MEMORY_ORDER_DEPENDENCY=1 \
+              -DOS_ATOMIC_CONFIG_STARVATION_FREE_ONLY=0 -DOS_FIREHOSE_SPI=1 -DARM64_BOARD_CONFIG_BCM2837 \
+              -I"$D" -I"$D/src" -I"$D/src/firehose" \
+              -I"$E/osfmk" -I"$E/bsd" -I"$E/libkern" -I"$E/pexpert" -I"$E/iokit" -I"$E/security" \
+              -I"$X/libkern/firehose" -I"$E/libkern/os" -I"$X/EXTERNAL_HEADERS" \
+              -I"$PWD/fakeroot/usr/local/include/kernel" \
+              -o firehose-kext/firehose_buffer.o "$D/src/firehose/firehose_buffer.c"
+            libtool -static -o fakeroot/usr/local/lib/kernel/libfirehose_kernel.a firehose-kext/firehose_buffer.o
+            for L in libpthread_kext libfirehose_kernel; do
+              lipo -info "fakeroot/usr/local/lib/kernel/$L.a"
+              test "$(lipo -archs "fakeroot/usr/local/lib/kernel/$L.a")" = arm64
+            done
             ls -l fakeroot/usr/local/lib/kernel/
             echo "::endgroup::"
             bash build.sh 2>&1 | tee -a ../ios26-build.log
@@ -263,6 +289,15 @@ jobs:
           assert (subtype & 0xffffff) in (0, 1), f'expected plain arm64, got subtype {subtype:#x}'
           print('Verified plain arm64 Mach-O:', p)
           PY
+          # A plain arm64 header can still carry PAC code from a linked archive or a missed diagnostic. SM8250
+          # (ARMv8.2) runs the hint-space forms (paciasp, autibsp, pacia1716, xpaclri) as NOPs; every other PAC
+          # instruction is undefined there, so none may be in the kernel.
+          otool -tvV out/kernel.development.munch > out/kernel.dis
+          PAC='retaa|retab|eretaa|eretab|braaz?|brabz?|blraaz?|blrabz?|ldraa|ldrab|pacia|pacib|pacda|pacdb|paciza|pacizb|pacdza|pacdzb|pacga|autia|autib|autda|autdb|autiza|autizb|autdza|autdzb|xpaci|xpacd'
+          n=$(grep -c -w -E "$PAC" out/kernel.dis || true)
+          echo "non-hint PAC instructions: $n"
+          if [ "$n" -ne 0 ]; then grep -n -w -E "$PAC" out/kernel.dis | head -40; exit 1; fi
+          rm out/kernel.dis
           shasum -a 256 out/kernel.development.munch > out/SHA256SUMS
 
       - uses: actions/upload-artifact@v4
