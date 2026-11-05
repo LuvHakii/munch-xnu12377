@@ -103,6 +103,10 @@ jobs:
           # The patch's PAC diagnostics outside HAS_STD_PAC (that macro is set only for __arm64e__) read the PAC key
           # registers: they do not assemble for plain arm64 and would take an undefined-instruction exception on a
           # CPU without PAC (SM8250 has none). Compile them for arm64e only.
+          # ccache classes -MJ (clang's compilation database output) as an unsupported option and then does not
+          # cache the compile at all (ccache argprocessing.cpp); XNU's C, C++ and assembler rules always pass it.
+          sed -i '' 's/ -MJ \$(@:o=o\.json)//' dxb/xnu/makedefs/MakeInc.rule
+          ! grep -n -e '-MJ' dxb/xnu/makedefs/MakeInc.rule
           python3 - <<'PY'
           import re
           from pathlib import Path
@@ -145,7 +149,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install jq gum bash cmake ninja
+          brew install jq gum bash cmake ninja ccache
           # the pinned build script checks for xcodes, though Xcode is preinstalled
           printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
           sudo chmod +x /usr/local/bin/xcodes
@@ -160,6 +164,14 @@ jobs:
           sw_vers
           xcodebuild -version
 
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build the kernel
         shell: bash
         env:
@@ -167,10 +179,70 @@ jobs:
           # honours this variable when it is set: the first runs compiled with __arm64e__ (kalloc.c
           # static_assert on T1SZ_BOOT + 1 + VM_KERNEL_POINTER_SIGNIFICANT_BITS). HakiOS's xnu-build.sh sets it too.
           ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG: arm64
+          # XNU's own hook (makedefs/MakeInc.def: KCC = $(CCACHE) $(CC)); it leaves $(CC) alone so mig keeps working
+          CCACHE: ccache
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_MAXSIZE: 4G
+          CCACHE_COMPILERCHECK: content
+          CCACHE_NOHASHDIR: '1'
         run: |
           set -euo pipefail
+          ccache --zero-stats
           cd dxb
+          set +e
           bash build.sh 2>&1 | tee ../ios26-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          # The patch links -lpthread_kext. There is no kext loader, so HakiOS builds libpthread's kern/ sources as a
+          # static library against the kernel's exported headers (xnu-deps/build/pthread/build.sh). That needs the
+          # headers this build has just exported, so it runs after the first pass and the build is resumed.
+          if [ "$rc" -ne 0 ] && grep -q "library 'pthread_kext' not found" ../ios26-build.log; then
+            echo "::group::libpthread_kext.a"
+            LP=$(curl -fsS https://raw.githubusercontent.com/apple-oss-distributions/distribution-macOS/macos-265/release.json |
+                 jq -r '.projects[] | select(.project=="libpthread") | .tag')
+            echo "libpthread tag: $LP"
+            git clone -q --depth 1 --branch "$LP" https://github.com/apple-oss-distributions/libpthread.git libpthread
+            X=$PWD/xnu; E=$PWD/build/xnu.obj/EXPORT_HDRS; P=$PWD/libpthread
+            test -d "$E/osfmk"
+            mkdir -p pthread-kext/inc "$PWD/fakeroot/usr/local/lib/kernel"
+            cat > pthread-kext/inc/TargetConditionals.h <<'EOF'
+          #ifndef _TARGETCONDITIONALS_H_
+          #define _TARGETCONDITIONALS_H_
+          /* minimal stand-in for building the pthread kext sources outside Xcode */
+          #define TARGET_OS_MAC 1
+          #define TARGET_OS_OSX 0
+          #define TARGET_OS_IPHONE 1
+          #define TARGET_OS_IOS 1
+          #define TARGET_OS_EMBEDDED 1
+          #define TARGET_OS_SIMULATOR 0
+          #define TARGET_OS_DRIVERKIT 0
+          #define TARGET_CPU_ARM64 1
+          #endif
+          EOF
+            for f in kern_init kern_support kern_synch; do
+              xcrun -sdk iphoneos clang -arch arm64 -c -Os -mkernel -nostdinc -fno-builtin -fno-common -Wno-int-conversion \
+                -DKERNEL=1 -DKERNEL_PRIVATE=1 -DPRIVATE=1 -D__PTHREAD_EXPOSE_INTERNALS__=1 \
+                -Dpthread_kern=pthread_kext_kern -Dcurrent_uthread=pthread_kext_current_uthread \
+                -D__DARWIN_64_BIT_INO_T=1 -DARM64_BOARD_CONFIG_BCM2837 \
+                -Ipthread-kext/inc -I"$P" -I"$E/osfmk" -I"$E/bsd" -I"$E/libkern" -I"$E/pexpert" -I"$E/iokit" \
+                -I"$E/security" -I"$X/EXTERNAL_HEADERS" -I"$P/include" -I"$P/private" \
+                -o "pthread-kext/pthread_$f.o" "$P/kern/$f.c"
+            done
+            libtool -static -o fakeroot/usr/local/lib/kernel/libpthread_kext.a pthread-kext/pthread_*.o
+            ls -l fakeroot/usr/local/lib/kernel/
+            echo "::endgroup::"
+            bash build.sh 2>&1 | tee -a ../ios26-build.log
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          ccache --show-stats
+
+      - name: Save the compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
 
       - name: Validate and collect the kernel
         shell: bash
