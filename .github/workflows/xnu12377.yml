@@ -201,6 +201,8 @@ jobs:
           # static library against the kernel's exported headers (xnu-deps/build/pthread/build.sh). That needs the
           # headers this build has just exported, so it runs after the first pass and the build is resumed.
           if [ "$rc" -ne 0 ] && grep -q "library 'pthread_kext' not found" ../ios26-build.log; then
+            # this block's own output goes into the uploaded log too (run 9's failure here was only in the job log)
+            exec > >(tee -a ../ios26-build.log) 2>&1
             echo "::group::libpthread_kext.a"
             LP=$(curl -fsS https://raw.githubusercontent.com/apple-oss-distributions/distribution-macOS/macos-265/release.json |
                  jq -r '.projects[] | select(.project=="libpthread") | .tag')
@@ -238,11 +240,14 @@ jobs:
             # (retab, braa) is undefined on SM8250. Rebuilt here the way HakiOS does (xnu-deps/setup.sh stage2):
             # iphoneos, plain arm64, against this kernel's exported headers. build_libdispatch skips when the
             # library exists, so the second pass keeps this one.
+            # XNU_KERNEL_PRIVATE is left undefined, not 0 as HakiOS has it: 12377's kern/debug.h and kern/lock_rw.h test it
+            # with #ifdef, and defined-as-0 pulled in upsi.h ("#error upsi.h is XNU private") and the lck_rw_new_t
+            # internals (run 9). Undefined, debug.h includes <TargetConditionals.h>: the stub in pthread-kext/inc.
             mkdir -p firehose-kext
             D=$PWD/libdispatch
             test -f "$D/src/firehose/firehose_buffer.c"
             xcrun -sdk iphoneos clang -arch arm64 -c -Os -mkernel -nostdinc -fno-builtin \
-              -DKERNEL=1 -DKERNEL_PRIVATE=1 -DXNU_KERNEL_PRIVATE=0 -DPRIVATE=1 -D__DARWIN_64_BIT_INO_T=1 \
+              -DKERNEL=1 -DKERNEL_PRIVATE=1 -DPRIVATE=1 -D__DARWIN_64_BIT_INO_T=1 -Ipthread-kext/inc \
               -DDISPATCH_USE_DTRACE=0 -DOS_ATOMIC_CONFIG_MEMORY_ORDER_DEPENDENCY=1 \
               -DOS_ATOMIC_CONFIG_STARVATION_FREE_ONLY=0 -DOS_FIREHOSE_SPI=1 -DARM64_BOARD_CONFIG_BCM2837 \
               -I"$D" -I"$D/src" -I"$D/src/firehose" \
@@ -257,7 +262,7 @@ jobs:
             done
             ls -l fakeroot/usr/local/lib/kernel/
             echo "::endgroup::"
-            bash build.sh 2>&1 | tee -a ../ios26-build.log
+            bash build.sh
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
