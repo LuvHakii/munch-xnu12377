@@ -335,10 +335,16 @@ jobs:
           # The second pass (after the pthread/firehose rebuild) links the kernel but its install target does not
           # copy it into fakeroot (run 12: "built kernel at .../xnu.obj/DEVELOPMENT_ARM64_BCM2837//mach.development.bcm2837",
           # nothing in Kernels/), so the build directory is looked in too.
-          K=$(ls dxb/fakeroot/System/Library/Kernels/kernel.development.bcm2837 \
-                 dxb/fakeroot/System/Library/Kernels/kernel.development.* \
-                 dxb/build/xnu.obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 2>/dev/null | head -1)
-          test -n "$K" || { echo "no kernel in dxb/fakeroot/System/Library/Kernels"; ls -l dxb/fakeroot/System/Library/Kernels || true; exit 1; }
+          # (a loop, not `ls A B C | head -1`: with pipefail a missing name makes ls fail and the step end there --
+          # runs 11-13 lost their kernel that way)
+          K=
+          for c in dxb/fakeroot/System/Library/Kernels/kernel.development.bcm2837 \
+                   dxb/fakeroot/System/Library/Kernels/kernel.development.* \
+                   dxb/build/xnu.obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837; do
+            [ -f "$c" ] && { K=$c; break; }
+          done
+          test -n "$K" || { echo "no kernel found"; ls -l dxb/fakeroot/System/Library/Kernels dxb/build/xnu.obj/DEVELOPMENT_ARM64_BCM2837 || true; exit 1; }
+          echo "kernel: $K"
           cp "$K" out/kernel.development.munch
           python3 - <<'PY'
           from pathlib import Path
