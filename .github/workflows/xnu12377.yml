@@ -9,7 +9,7 @@ name: Munch - XNU 12377 (iOS 26, non-PAC arm64)
 # (pexpert/pexpert/arm64/BCM2837.h, SUPPORTED_ARM64_MACHINE_CONFIGS, MACHINE_FLAGS_ARM64_BCM2837)
 # and carries its drivers; ARCH_CONFIG=ARM64 keeps the kernel on the plain arm64 ABI, which is
 # what SM8250 can execute. Only HINT-form PAC instructions are backward-compatible NOPs.
-# compat/ shares kernel preparation between local and CI builds.
+# compat/ adds unsigned user-instruction handling and authenticated fixup decoding.
 
 on:
   workflow_dispatch:
@@ -100,6 +100,15 @@ jobs:
           sudo xcode-select -s "$XC"
           sw_vers
           xcodebuild -version
+
+      - name: Apply unsigned arm64e compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 compat/apply-instructions.py dxb/xnu
+          python3 compat/apply-fixups.py dxb/xnu
+          python3 compat/test-pac-emu.py
+          python3 compat/test-fixups.py dxb/xnu
 
       - name: Restore the compiler cache
         uses: actions/cache/restore@v4
