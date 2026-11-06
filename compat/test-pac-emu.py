@@ -37,13 +37,15 @@ static int count = 0;
 #define HOLE_LO (MEM_BASE + 0x1000ull)
 #define HOLE_HI (MEM_BASE + 0x1800ull)
 static uint8_t mem[MEM_SIZE];
+static unsigned load_calls;
 static uint64_t
 t_load(uint64_t addr, void *ctx, int *err)
 {
 	uint64_t v = 0;
 	(void)ctx;
-	if (addr < MEM_BASE || addr + 8 > MEM_BASE + MEM_SIZE ||
-	    (addr >= HOLE_LO && addr + 8 <= HOLE_HI)) {
+	load_calls++;
+	if (addr < MEM_BASE || addr > MEM_BASE + MEM_SIZE - 8 ||
+	    (addr < HOLE_HI && addr + 8 > HOLE_LO)) {
 		*err = 1;
 		return 0;
 	}
@@ -62,6 +64,7 @@ static void
 init(regs *r, uint64_t pc)
 {
 	memset(r, 0, sizeof(*r));
+	load_calls = 0;
 	r->pc = pc;
 	r->s.x = r->x;
 	r->s.fp = &r->fp;
@@ -247,6 +250,26 @@ main(void)
 	CHECK(r.x[9] == 0x123, "ldraa sp value");
 	CHECK(r.sp == MEM_BASE + 0x310, "ldraa sp writeback, got %llx", (unsigned long long)r.sp);
 
+	// Check the original SP, not the offset-adjusted effective address.
+	const uint32_t misaligned_sp_ops[] = {0xf82007e0u, 0xf8a01fe0u};
+	for (unsigned i = 0; i < sizeof(misaligned_sp_ops) / sizeof(misaligned_sp_ops[0]); ++i) {
+		init(&r, 0x500000);
+		r.sp = MEM_BASE + 8;
+		r.x[0] = 0xdead;
+		CHECK(munch_pac_emulate(&r.s, misaligned_sp_ops[i], r.pc) == MUNCH_PAC_SP_ALIGN,
+		    "misaligned SP faults before load");
+		CHECK(load_calls == 0, "misaligned SP performs no memory access");
+		CHECK(r.x[0] == 0xdead && r.sp == MEM_BASE + 8 && r.pc == 0x500000,
+		    "SP alignment fault preserves state");
+	}
+	*(uint64_t *)&mem[8] = 0x5678;
+	init(&r, 0x500000);
+	r.sp = MEM_BASE;
+	CHECK(munch_pac_emulate(&r.s, 0xf8201fe0u, r.pc) == MUNCH_PAC_OK,
+	    "aligned SP permits eight-byte pre-index offset");
+	CHECK(r.x[0] == 0x5678 && r.sp == MEM_BASE + 8 && r.pc == 0x500004,
+	    "successful SP writeback need not stay sixteen-byte aligned");
+
 	// 16. Signed 10-bit offset extremes: -4096 and +4088.
 	*(uint64_t *)&mem[0x000] = 0xaaaaull;
 	init(&r, 0x500000);
@@ -279,6 +302,17 @@ main(void)
 		CHECK(rc == MUNCH_PAC_FAULT, "ldraa sp fault rc %d", rc);
 	}
 	CHECK(r.sp == HOLE_LO - 16, "fault keeps sp");
+
+	const uint64_t crossing_hole[] = {HOLE_LO - 4, HOLE_HI - 4};
+	for (unsigned i = 0; i < sizeof(crossing_hole) / sizeof(crossing_hole[0]); ++i) {
+		init(&r, 0x600000);
+		r.x[1] = crossing_hole[i];
+		r.x[0] = 0xdead;
+		CHECK(munch_pac_emulate(&r.s, 0xf8200420u, r.pc) == MUNCH_PAC_FAULT,
+		    "load crossing either hole boundary fails");
+		CHECK(r.x[0] == 0xdead && r.x[1] == crossing_hole[i] && r.pc == 0x600000,
+		    "crossing-hole failure preserves state");
+	}
 
 	// 18. Reserved/malformed encodings stay UNKNOWN (never consumed).
 	init(&r, 0x700000);

@@ -33,6 +33,7 @@
 #define MUNCH_PAC_UNKNOWN -1 // not a PAC opcode; caller must not consume it
 #define MUNCH_PAC_FAULT -2   // LDRA memory access failed; state untouched
 #define MUNCH_PAC_SIGILL -3  // recognized but unsupported (PACGA); SIGILL it
+#define MUNCH_PAC_SP_ALIGN -4 // misaligned SP base; no access or state change
 
 // Live register view. x points at contiguous x0..x28 storage; fp, lr, sp,
 // and pc point at their own live cells. Register 31 reads as zero and
@@ -251,6 +252,10 @@ munch_pac_emulate(munch_pac_state_t *s, uint32_t insn, uint64_t cur_pc)
 	if ((insn & 0xff200400u) == 0xf8200400u) {
 		unsigned rt = insn & 0x1fu;
 		uint64_t val;
+		rn = (insn >> 5) & 0x1fu;
+		if (rn == 31 && (*s->sp & 15u) != 0) {
+			return MUNCH_PAC_SP_ALIGN;
+		}
 		addr = munch_pac_ldra_addr(s, insn);
 		if (s->load64 == 0) {
 			return MUNCH_PAC_FAULT;

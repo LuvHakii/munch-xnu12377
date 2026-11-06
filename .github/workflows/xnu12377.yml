@@ -108,6 +108,7 @@ jobs:
           python3 compat/apply-instructions.py dxb/xnu
           python3 compat/apply-fixups.py dxb/xnu
           python3 compat/test-pac-emu.py
+          python3 compat/test-pac-faults.py dxb/xnu
           python3 compat/test-fixups.py dxb/xnu
 
       - name: Restore the compiler cache

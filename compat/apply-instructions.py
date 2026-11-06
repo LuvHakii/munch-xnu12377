@@ -54,9 +54,12 @@ HOOK_NEW = """\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr))
 \t\tmrc = munch_pac_emulate(&mps, instr, mpc);
 \t\tif (mrc == MUNCH_PAC_OK) {
 \t\t\treturn;
-\t\t} else if (mrc == MUNCH_PAC_FAULT) {
-\t\t\tmunch_pac_bad_access(&mps, instr);
+\t\t} else if (mrc == MUNCH_PAC_SP_ALIGN) {
+\t\t\thandle_sp_align(state);
 \t\t\t__builtin_unreachable();
+\t\t} else if (mrc == MUNCH_PAC_FAULT) {
+\t\t\tmunch_pac_handle_data_abort(state, &mps, instr);
+\t\t\treturn;
 \t\t}
 \t\t/* UNKNOWN and SIGILL fall through to triage below. */
 \t}
@@ -72,8 +75,11 @@ munch_pac_copyin64(uint64_t addr, void *ctx, int *err)
 {
 \tuint64_t val = 0;
 \tint rc;
+\tthread_t thread = current_thread();
 
 \t(void)ctx;
+\tthread->machine.recover_esr = 0;
+\tthread->machine.recover_far = 0;
 \trc = copyin(VM_USER_STRIP_TBI(addr), (char *)&val, sizeof(val));
 \tif (err) {
 \t\t*err = rc;
@@ -81,19 +87,28 @@ munch_pac_copyin64(uint64_t addr, void *ctx, int *err)
 \treturn val;
 }
 
-/*
- * EXC_BAD_ACCESS for a faulting LDRA access. copyin already paged in
- * everything it could, so a failure here is a genuine bad address, not
- * a retry: report KERN_INVALID_ADDRESS with the faulting effective
- * address. Never advances pc.
- */
+/* copyin has already faulted the actual byte, which can be on a later page. */
 static void
-munch_pac_bad_access(munch_pac_state_t *mps, uint32_t instr)
+munch_pac_handle_data_abort(arm_saved_state_t *state, munch_pac_state_t *mps,
+    uint32_t instr)
 {
+\tthread_t thread = current_thread();
 \texception_type_t exc = EXC_BAD_ACCESS;
 \tmach_exception_data_type_t codes[2];
 \tmach_msg_type_number_t numcodes = 2;
 
+\tif (thread->machine.recover_esr != 0) {
+\t\tuint64_t esr = thread->machine.recover_esr;
+\t\tvm_offset_t far = thread->machine.recover_far;
+\t\tesr = (esr & ~ESR_EC_MASK) | ((uint64_t)ESR_EC_DABORT_EL0 << ESR_EC_SHIFT);
+\t\tset_saved_state_esr(state, esr);
+\t\tset_saved_state_far(state, far);
+\t\tthread_reset_pcs_will_fault(thread);
+\t\thandle_abort(state, esr, far, inspect_data_abort, handle_user_abort, NULL);
+\t\treturn;
+\t}
+
+\t/* No hardware fault means copyin rejected the address before touching it. */
 \tcodes[0] = KERN_INVALID_ADDRESS;
 \tcodes[1] = (mach_exception_data_type_t)munch_pac_ldra_addr(mps, instr);
 \texception_triage(exc, codes, numcodes);
