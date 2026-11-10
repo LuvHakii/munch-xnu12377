@@ -31,8 +31,8 @@ HOOK_NEW = """\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr))
 \t * as undefined instructions on this CPU. Emulate them with unsigned
 \t * semantics for 64-bit EL0 threads only; kernel faults, 32-bit
 \t * state, DTrace probes, and debugger traps keep their exact old
-\t * behavior. PACGA is recognized but unsupported and falls through
-\t * to SIGILL; a faulting LDRA access triages EXC_BAD_ACCESS.
+\t * behavior. PACGA is emulated (Rd takes the data operand Rm: unsigned
+\t * signing is identity); a faulting LDRA access triages EXC_BAD_ACCESS.
 \t * (The DTrace fast-trap opcodes never match the PAC decoder, so no
 \t * special-case is needed here; the CONFIG_DTRACE block below runs
 \t * for anything the emulator does not consume.)

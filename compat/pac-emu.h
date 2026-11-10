@@ -32,7 +32,6 @@
 #define MUNCH_PAC_OK 0      // emulated; registers and pc already updated
 #define MUNCH_PAC_UNKNOWN -1 // not a PAC opcode; caller must not consume it
 #define MUNCH_PAC_FAULT -2   // LDRA memory access failed; state untouched
-#define MUNCH_PAC_SIGILL -3  // recognized but unsupported (PACGA); SIGILL it
 #define MUNCH_PAC_SP_ALIGN -4 // misaligned SP base; no access or state change
 
 // Live register view. x points at contiguous x0..x28 storage; fp, lr, sp,
@@ -284,13 +283,24 @@ munch_pac_emulate(munch_pac_state_t *s, uint32_t insn, uint64_t cur_pc)
 		return MUNCH_PAC_OK;
 	}
 
-	// PACGA: 10011010110 Rm 001100 Rn Rd. Recognized so a future
-	// generic-hash implementation has a home, but unsupported: its
-	// output feeds diversifiers and thread-state hashes, so a fake
-	// zero or a no-op copy would corrupt later control flow instead
-	// of failing fast. dyld/launchd scan shows PACGA count 0.
+	// PACGA Rd, Rn, Rm: 10011010110 Rm 001100 Rn Rd. The output is data
+	// nobody authenticates -- it feeds diversifiers and thread-state
+	// hashes -- so, like PACIA above, signing is identity and Rd takes
+	// the data operand Rm. The modifier Rn contributes only the dropped
+	// signature and is not copied into Rd. Not a no-op: leaving Rd alone
+	// would hand the caller a stale value where it expects the hashed
+	// one. 731 such sites are in executable 26.6 cache code (Foundation
+	// 332, CoreGraphics 215, CoreFoundation 99, JavaScriptCore 35,
+	// libobjc 7, ProVideo 12, rest scattered; docs/kernel-build.md,
+	// "PAC and PACGA in the 26.6 shared cache"), so failing fast here
+	// would kill them all. Exact hardware parity would need QARMA-5;
+	// nothing in the unsigned scheme can tell the difference.
 	if ((insn & 0xffe0fc00u) == 0x9ac03000u) {
-		return MUNCH_PAC_SIGILL;
+		rd = insn & 0x1fu;
+		rm = (insn >> 16) & 0x1fu;
+		munch_pac_set_reg(s, rd, munch_pac_reg(s, rm));
+		*s->pc = cur_pc + 4;
+		return MUNCH_PAC_OK;
 	}
 
 	// Everything else, including reserved PAC-space encodings and the

@@ -335,11 +335,20 @@ main(void)
 	CHECK(munch_pac_emulate(&r.s, I_LDAPR, 0x800000) == MUNCH_PAC_UNKNOWN, "ldapr unknown");
 	CHECK(munch_pac_emulate(&r.s, 0, 0x800000) == MUNCH_PAC_UNKNOWN, "zero word unknown");
 
-	// 20. PACGA is explicit SIGILL, never zero/no-op.
+	// 20. PACGA writes the data operand (Rm) into Rd, so a caller that
+	// stores the "signature" still gets a function of the data. The
+	// modifier (Rn) must not leak in, and the PC advances.
 	init(&r, 0x900000);
-	r.x[0] = 0xaaaa;
-	CHECK(munch_pac_emulate(&r.s, I_PACGA, 0x900000) == MUNCH_PAC_SIGILL, "pacga sigill");
-	CHECK(r.x[0] == 0xaaaa && r.pc == 0x900000, "pacga untouched");
+	r.x[0] = 0xaaaa;                 // stale Rd, must be replaced
+	r.x[1] = 0x1111;                 // modifier, must not appear in Rd
+	r.x[2] = 0x2222;                 // data, must appear in Rd
+	CHECK(munch_pac_emulate(&r.s, I_PACGA, 0x900000) == MUNCH_PAC_OK, "pacga ok");
+	CHECK(r.x[0] == 0x2222, "pacga rd = rm");
+	CHECK(r.pc == 0x900004, "pacga pc advanced");
+	init(&r, 0x900000);
+	r.x[5] = 0x7777;                 // pacga x9, x6, x5
+	CHECK(munch_pac_emulate(&r.s, 0x9ac530c9u, 0x900000) == MUNCH_PAC_OK, "pacga other regs ok");
+	CHECK(r.x[9] == 0x7777 && r.pc == 0x900004, "pacga other regs rd = rm");
 
 	// 21. Null and canonicalization boundaries.
 	CHECK(munch_pac_strip_code(0) == 0, "code null");
