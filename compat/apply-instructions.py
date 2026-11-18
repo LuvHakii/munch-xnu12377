@@ -23,7 +23,14 @@ INCLUDE_ANCHOR = "#include <arm64/instructions.h>\n"
 INCLUDE_NEW = "#include <arm64/instructions.h>\n#include <arm64/munch_pac_emu.h>\n"
 
 HOOK_ANCHOR = "\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));\n\n#if CONFIG_DTRACE\n"
-HOOK_NEW = """\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
+HOOK_NEW = """#if defined(ARM64_BOARD_CONFIG_BCM2837) && !defined(HAS_APPLE_PAC)
+\tthread_t measured = current_thread();
+\tbool profile = __atomic_load_n(&measured->machine.munch_pac_profile, __ATOMIC_RELAXED);
+\tuint64_t n = profile ? __atomic_load_n(&measured->machine.munch_pac_count, __ATOMIC_RELAXED) + 1 : 0;
+\tbool sample = profile && (n % 1024 == 0);
+\tuint64_t start = sample ? mach_absolute_time() : 0;
+#endif
+\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
 
 #if defined(ARM64_BOARD_CONFIG_BCM2837) && !defined(HAS_APPLE_PAC)
 \t/*
@@ -53,6 +60,13 @@ HOOK_NEW = """\tCOPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr))
 
 \t\tmrc = munch_pac_emulate(&mps, instr, mpc);
 \t\tif (mrc == MUNCH_PAC_OK) {
+\t\t\tif (profile) {
+\t\t\t\tif (sample) {
+\t\t\t\t\tuint64_t ticks = __atomic_load_n(&measured->machine.munch_pac_ticks, __ATOMIC_RELAXED);
+\t\t\t\t\t__atomic_store_n(&measured->machine.munch_pac_ticks, ticks + mach_absolute_time() - start, __ATOMIC_RELAXED);
+\t\t\t\t}
+\t\t\t\t__atomic_store_n(&measured->machine.munch_pac_count, n, __ATOMIC_RELAXED);
+\t\t\t}
 \t\t\treturn;
 \t\t} else if (mrc == MUNCH_PAC_SP_ALIGN) {
 \t\t\thandle_sp_align(state);

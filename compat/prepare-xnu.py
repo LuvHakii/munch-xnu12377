@@ -118,3 +118,31 @@ int nw_wifi_set_events(void *fn) { (void)fn; return -19; }
 int nw_wifi_status_get(void *out) { (void)out; return -19; }
 int nw_wifi_tx(const void *frame, size_t len) { (void)frame; (void)len; return -19; }
 ''')
+
+# Arm the counters only for threads selected by the existing stack sampler.
+def pac_snapshot(s):
+    anchors = {
+        'uint64_t tid, pc, lr, fp;': 'uint64_t tid, pc, lr, fp, pac_count, pac_ticks;',
+        'snap[count].tid = thread_tid(thread);': '''snap[count].tid = thread_tid(thread);
+		__atomic_store_n(&thread->machine.munch_pac_profile, true, __ATOMIC_RELAXED);
+		snap[count].pac_count = __atomic_load_n(&thread->machine.munch_pac_count, __ATOMIC_RELAXED);
+		snap[count].pac_ticks = __atomic_load_n(&thread->machine.munch_pac_ticks, __ATOMIC_RELAXED);''',
+        'uint64_t frame[2], fp = snap[i].fp;': '''uint64_t frame[2], fp = snap[i].fp;
+		uint64_t ns;
+		absolutetime_to_nanoseconds(snap[i].pac_ticks, &ns);
+		snprintf(line, sizeof(line), "pac-profile: tid=0x%llx ok=%llu samples=%llu sampled_ns=%llu\\n",
+		    snap[i].tid, snap[i].pac_count, snap[i].pac_count / 1024, ns);
+		ustacks_say(line);''',
+    }
+    for before, after in anchors.items():
+        assert s.count(before) == 1, before
+        s = s.replace(before, after)
+    return s
+
+
+edit('osfmk/arm/thread.h', lambda s: s.replace('reserved15;\n#endif\n};', '''reserved15;
+#endif
+	bool munch_pac_profile;
+	uint64_t munch_pac_count, munch_pac_ticks;
+};''', 1))
+edit('osfmk/arm64/user_exception_trace.c', pac_snapshot)
