@@ -16,6 +16,13 @@ def edit(path, fn):
     print('patched', path)
 
 
+# The 24B156 dynamic data ends at 0x30ffd8000 before its 0x20000000 maximum
+# slide. Round that end up to a 32 MiB pmap nesting boundary and keep the base.
+edit('osfmk/mach/shared_region.h', lambda s: re.sub(
+    r'^(#define SHARED_REGION_SIZE_ARM64[ \t]+)0x180000000ULL$',
+    r'\g<1>0x1B0000000ULL', s, flags=re.MULTILINE))
+
+
 # This driver is not used on munch; do not download redwood touchscreen firmware.
 (root / 'bsd/dev/redwood_focaltech_fw.h').write_text('''\
 #ifndef REDWOOD_FOCALTECH_FW_H
