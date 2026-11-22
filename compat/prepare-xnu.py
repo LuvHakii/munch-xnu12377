@@ -23,6 +23,36 @@ edit('osfmk/mach/shared_region.h', lambda s: re.sub(
     r'\g<1>0x1B0000000ULL', s, flags=re.MULTILINE))
 
 
+# 24B156 reads a four-byte state through a caller-checked sysctl before launching services.
+def public_lockdown_state(s):
+    anchor = '#include <sys/lockdown_mode.h>'
+    assert s.count(anchor) == 1 and 'lockdown_mode_state_public' not in s
+    s = s.replace(anchor, anchor + '''
+#include <sys/codesign.h>
+#include <sys/errno.h>
+#include <sys/proc.h>
+#include <IOKit/IOBSD.h>''')
+    return s + '''
+static int
+sysctl_lockdown_mode_state_public SYSCTL_HANDLER_ARGS
+{
+	if (!csproc_get_platform_binary(current_proc()) &&
+	    !IOCurrentTaskHasEntitlement("com.apple.developer.lockdown-mode.state")) {
+		return EPERM;
+	}
+	int state = get_lockdown_mode_state();
+	return SYSCTL_OUT(req, &state, sizeof(state));
+}
+
+SYSCTL_PROC(_security_mac, OID_AUTO, lockdown_mode_state_public,
+    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED, 0, 0,
+    sysctl_lockdown_mode_state_public, "I", "Lockdown Mode state for authorized callers");
+'''
+
+
+edit('bsd/kern/lockdown_mode.c', public_lockdown_state)
+
+
 # This driver is not used on munch; do not download redwood touchscreen firmware.
 (root / 'bsd/dev/redwood_focaltech_fw.h').write_text('''\
 #ifndef REDWOOD_FOCALTECH_FW_H
