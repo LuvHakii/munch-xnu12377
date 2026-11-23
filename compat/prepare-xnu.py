@@ -53,6 +53,17 @@ SYSCTL_PROC(_security_mac, OID_AUTO, lockdown_mode_state_public,
 edit('bsd/kern/lockdown_mode.c', public_lockdown_state)
 
 
+def register_watchdog_sample(s):
+    anchor = 'osfmk/arm64/loader_return.c\toptional nos_arm_asm\n'
+    assert s.count(anchor) == 1
+    return s.replace(anchor, anchor + 'osfmk/arm64/munch_watchdog_sample.c\toptional nos_arm_asm\n')
+
+
+edit('osfmk/conf/files.arm64', register_watchdog_sample)
+(root / 'osfmk/arm64/munch_watchdog_sample.c').write_bytes(
+    Path(__file__).with_name('munch_watchdog_sample.c').read_bytes())
+
+
 # This driver is not used on munch; do not download redwood touchscreen firmware.
 (root / 'bsd/dev/redwood_focaltech_fw.h').write_text('''\
 #ifndef REDWOOD_FOCALTECH_FW_H
