@@ -60,6 +60,19 @@ def register_watchdog_sample(s):
 
 
 edit('osfmk/conf/files.arm64', register_watchdog_sample)
+
+
+# 24B156 libsystem_kernel stores crash_count at 0xb4, kqworkloop limits at 0xbc and the conclave
+# limit at 0xc4; 23G90 (this kernel's layout) uses 0xac, 0xb4 and 0xbc. Unshifted, the kernel took
+# launchd's crash count and throttle timeout as kqworkloop limits and daemons killed themselves.
+def spawnattr_24b156(s):
+    anchor = '\tuint16_t        psa_sec_flags;           /* flags for task_sec */\n'
+    assert s.count(anchor) == 1
+    return s.replace(anchor, anchor + '\tuint32_t        psa_24b156_ac;           /* set_task_security_policy_np */\n'
+                     '\tuint8_t         psa_24b156_b0;           /* set_use_sanitizers_np */\n')
+
+
+edit('bsd/sys/spawn_internal.h', spawnattr_24b156)
 (root / 'osfmk/arm64/munch_watchdog_sample.c').write_bytes(
     Path(__file__).with_name('munch_watchdog_sample.c').read_bytes())
 
