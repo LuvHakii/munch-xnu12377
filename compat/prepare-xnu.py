@@ -73,6 +73,13 @@ def spawnattr_24b156(s):
 
 
 edit('bsd/sys/spawn_internal.h', spawnattr_24b156)
+
+
+# munch's RAM above 0xFFC20000 is about 10 GiB in one piece once the 6 GiB bank is in the UEFI map; the
+# loader's window may then pass 8 GB. Two L2 pages per GB plus four: 28 pages cover 12 GB
+# (arm_vm_init.c panics "BOOTSTRAP_TABLE_SIZE too small" rather than map short).
+edit('osfmk/arm/pmap/pmap.h', lambda s: s.replace('#define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 20)',
+                                                  '#define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 28)', 1))
 (root / 'osfmk/arm64/munch_watchdog_sample.c').write_bytes(
     Path(__file__).with_name('munch_watchdog_sample.c').read_bytes())
 
